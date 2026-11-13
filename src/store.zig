@@ -96,6 +96,12 @@ pub const Store = struct {
         max_dbs: u32 = 16,
         /// How much a commit waits for the disk. See `Durability`.
         durability: Durability = .full,
+        /// File mode for the store (and its LMDB lock file) when it is
+        /// created, and the mode an existing store is tightened to on
+        /// open. The store is a plaintext archive of everything a reader
+        /// has synced — notes, lists, private messages — so the default
+        /// is owner-only rather than LMDB's own 0644.
+        file_mode: c_uint = 0o600,
     };
 
     /// What survives a crash, traded against what a commit costs. LMDB syncs
@@ -138,7 +144,13 @@ pub const Store = struct {
         errdefer c.mdb_env_close(env);
         try check(c.mdb_env_set_mapsize(env, options.map_size));
         try check(c.mdb_env_set_maxdbs(env, @intCast(options.max_dbs)));
-        try check(c.mdb_env_open(env, path, @as(c_uint, @intCast(c.MDB_NOSUBDIR)) | options.durability.envFlags(), 0o644));
+        // An existing store keeps whatever mode it was created with; tighten
+        // it to the caller's mode best-effort (a store made by an older
+        // version of this code, or by hand, may be world-readable). LMDB
+        // applies `mode` only at creation, so this is the only way an
+        // already-on-disk store ever gets the tighter setting.
+        if (std.posix.fchmodat(std.posix.AT.FDCWD, path, options.file_mode, 0)) |_| {} else |_| {}
+        try check(c.mdb_env_open(env, path, @as(c_uint, @intCast(c.MDB_NOSUBDIR)) | options.durability.envFlags(), options.file_mode));
 
         // Create/open the named sub-databases in a single write transaction.
         // The dbi handles remain valid for the life of the environment.
